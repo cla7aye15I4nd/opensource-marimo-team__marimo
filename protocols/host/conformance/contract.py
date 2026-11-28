@@ -202,12 +202,11 @@ def ended(frame: Frame) -> bool:
 def document_state(
     snapshot: list[Frame],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Check document ordering using only observed wire records."""
+    """Check a snapshot's cell membership and versions at ready."""
     cells: dict[str, Any] = {}
     document = None
     for frame in snapshot:
         if frame.event == "cell":
-            assert document is None, "cell arrived after the document"
             cell = frame.message()["cell"]
             assert cell["id"] not in cells, "duplicate cell in snapshot"
             cells[cell["id"]] = cell

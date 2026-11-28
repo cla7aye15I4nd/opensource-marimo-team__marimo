@@ -278,8 +278,8 @@ or variables.
 
 ### Lifecycles
 
-If the host stops a runtime while a cell is waiting at `input()`, the client
-sees these changes in order.
+If the host stops a runtime while a cell is waiting at `input()`, it publishes
+these changes in order on the live stream.
 
 ```text
 input cancelled → execution completed → run completed → runtime ended
@@ -382,47 +382,35 @@ requests using the token and accept only loopback connections.
 
 ## Following state
 
-Clients use **event streams** to read state and follow changes as they happen.
 The **catalog stream** describes the host's notebooks and resources. A
-**notebook stream** carries the document and results for one notebook.
+**notebook stream** carries one notebook's document and results. Both use
+server-sent events (SSE). A record replaces any earlier record with the same
+identity. A removal discards that record.
 
-A record event carries the object's current state and replaces any earlier
-record with the same identity. For example, an `input` event first introduces
-a pending prompt, then replaces it with the answered or cancelled record.
-Removal events tell clients which records to discard. Clients handle
-`execution.removed` by discarding both the execution and its inputs.
+An initial connection starts with a **snapshot**. A notebook snapshot MUST
+represent one consistent state. To resume, reconnect to the same stream with
+the same filters and the last **cursor** received, even during a resume. Cursors
+are opaque. Every snapshot and resume ends with `ready`, followed by live
+changes. At `ready`, the resumed view MUST match a fresh snapshot taken at
+that event's cursor with the same filters.
 
-On an initial connection, the host sends a **snapshot** as a sequence of events
-describing the current state. For a notebook, these events include its cells,
-document, and retained results, with executions before their items. A `ready`
-event marks the end of the snapshot, after which the stream delivers changes
-as they happen. A client that only needs the current state can disconnect at
-`ready`.
+On resume, the host MAY omit a record or removal superseded by a later event
+for the same identity. Events it sends MUST keep their original order, cursors,
+and timestamps. The host MAY send `reset` and a fresh snapshot, and MUST do so
+if it cannot resume from the cursor or the cursor predates a loss of host
+state. On `reset`, clients MUST discard their records and cursor.
 
-Clients can select object kinds with `kinds`. On a notebook stream, `run_id`
-narrows the view to one run and its executions and items. Because filters also
-select removal events, a client retaining inputs MUST subscribe to both `input`
-and `execution` to learn when those inputs are removed. The same filters apply
-to snapshots, live events, and replay.
+Hosts MUST publish each live document change as one group ending with
+`document`. In a snapshot, `document` MAY come before or after its cells.
 
-A notebook snapshot MUST represent one consistent state. Hosts MUST publish
-each document change as a group without interleaving unrelated events, so
-clients can apply an edit together with its effects on the rest of the
-document.
+Clients MUST accept unresolved references and resolve them as records arrive.
+At `ready`, every cell in the document's order and the execution of every
+retained item MUST be present when the filters select both kinds.
 
-Each **cursor** marks a position in the stream. Clients treat cursors as
-opaque. A client sends back the last cursor it received and does not compare
-or construct cursors. After disconnecting, a client can reconnect with its last
-cursor to request the events it missed. If the host no longer has those events,
-or the cursor predates a loss of host state, it requests a reset. Clients MUST
-then discard their previous view and rebuild it from a fresh snapshot.
-
-Event history can expire while results remain stored. Those results still
-appear in a fresh snapshot, even when their original events are unavailable.
-
-This version carries event streams over server-sent events (SSE). Other
-transports, such as WebSocket, could carry the same events while preserving
-their ordering, snapshot, and replay guarantees.
+`kinds` selects record kinds and their removals. On a notebook stream,
+`run_id` selects one run and its executions and items. A client retaining
+inputs MUST select both `input` and `execution`, since `execution.removed`
+discards the execution and its inputs.
 
 ### Custom events
 
@@ -434,13 +422,11 @@ as `marimo.pair.agent-message`. Producers MUST use a namespace they control.
 Clients MUST ignore custom types they do not recognize while retaining the
 stream cursor. Consumers of a type are responsible for validating its payload.
 
-Custom events MUST carry a timestamp, with the notebook identified by the
-stream. The envelope MUST include `request_id` when a request caused the event
-and omit it otherwise. Custom events participate in the stream's ordering and
-cursor-based replay, with their original ids and timestamps. They MUST NOT
-appear in snapshots. Once their replay history expires, a
-reset cannot recover them. Features that need recoverable state MUST
-represent that state separately rather than relying on custom events alone.
+Custom events MUST carry a timestamp. They MUST include `request_id` when a
+request caused the event and omit it otherwise. On resume, the host MUST replay
+every selected custom event since the cursor or send `reset`. Custom events
+MUST NOT appear in snapshots, so a reset cannot recover them. Features that
+need recoverable state MUST represent it separately.
 
 `kinds=custom` selects custom events, regardless of their namespaced type.
 Custom events do not belong to a run and are excluded when `run_id` is set.
@@ -472,9 +458,9 @@ remove the notebook's execution records, outputs, or runtime state.
 
 ### Requests and decisions
 
-Requests can produce changes after their HTTP response has arrived. The host
-includes the request's `Idempotency-Key` as `request_id` in related events
-so clients can follow their actions on the shared notebook stream.
+The HTTP response tells the client whether the host accepted its request.
+Related events carry the request's `Idempotency-Key` as `request_id` and can
+arrive after the response. A resume may skip a record that carried the key.
 
 The same key makes a request safe to retry within the host's documented retry
 window. Once a request is accepted, hosts MUST recognize its retries within that
@@ -512,10 +498,10 @@ the same problem. For a save, `index` is `0` and `cell` is null. A `409 conflict
 means the current state does not allow the request, such as a file that already
 exists, so reading again does not help.
 
-An accepted edit answers with the version of each cell it touched and the
-document at the edit's revision or a later one. The client already has the
-content it sent, and the versions let it recognize the edit when its events
-arrive on the stream.
+An accepted edit returns the document at the edit's revision or a later one,
+and the version of each touched cell (null for a deletion). To see whether
+its view reflects the edit, a client checks both the document and the touched
+cells, allowing for later changes.
 
 Accepting an edit and saving it are separate actions. The host reports whether
 the current document has reached storage, whether it saves automatically or

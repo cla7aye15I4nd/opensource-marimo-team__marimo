@@ -173,7 +173,7 @@ async def test_document_checker_accepts_withheld_source():
     )
 
 
-async def test_document_checker_rejects_cells_after_the_document():
+async def test_document_checker_accepts_cells_before_or_after_the_document():
     snapshot = []
     async for frame in frames(
         lines((FIXTURES / "notebook-events.sse").read_text())
@@ -181,11 +181,10 @@ async def test_document_checker_rejects_cells_after_the_document():
         if frame.event == "ready":
             break
         snapshot.append(frame)
-    document_state(snapshot)
-    with pytest.raises(AssertionError, match="cell arrived after"):
-        document_state(
-            sorted(snapshot, key=lambda frame: frame.event != "document")
-        )
+    document_first = sorted(
+        snapshot, key=lambda frame: frame.event != "document"
+    )
+    assert document_state(document_first) == document_state(snapshot)
 
 
 async def test_stalled_response_headers_have_a_deadline():

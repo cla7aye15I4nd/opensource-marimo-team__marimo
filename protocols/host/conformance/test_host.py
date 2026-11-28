@@ -213,16 +213,17 @@ async def test_edit_atomicity_and_conflicts(host, scratch):
             200,
             "EditResponse",
         )
-        events = await watch.until(lambda f: f.event == "document")
-        correlated = [f for f in events if f.comment is None]
-        assert [f.event for f in correlated] == ["cell", "document"]
-        for frame in correlated:
-            live(frame, key)
-        assert correlated[-1].message()["document"] == answer["document"]
-        assert (
-            answer["cells"]["check_a"]["etag"]
-            == correlated[0].message()["cell"]["etag"]
+        events = await watch.until(
+            lambda f: (
+                f.event == "document" and f.message().get("request_id") == key
+            )
         )
+        group = [f for f in events if f.comment is None][-2:]
+        assert [f.event for f in group] == ["cell", "document"]
+        cell = live(group[0], key)["cell"]
+        assert cell["id"] == "check_a"
+        assert cell["etag"] == answer["cells"]["check_a"]["etag"]
+        assert live(group[1], key)["document"] == answer["document"]
     before, cells = document_state(await host.snapshot(path + "/events"))
     # A valid change followed by a stale one must apply neither.
     response = await edit(
